@@ -5,6 +5,10 @@ linux 一切皆文件
 
 角色即JVM进程
 
+------
+
+
+
 #### 理论知识点
 
 **HDFS存储模型：**	
@@ -24,21 +28,19 @@ linux 一切皆文件
     任何对文件系统元数据产生修改的操作，Namenode都会使用EditLog事务日志记录下来， 使用FsImage存储内存所有的元数据状态， 使用本地磁盘保存EditLog和FsImage。
     EditLog具有完整性，数据丢失少，但恢复速度慢，并有体积膨胀风险
     FsImage具有恢复速度快，体积与内存数据相当，但不能实时保存，数据丢失多
-    NameNode使用了FsImage+EditLog整合的方案：
-    滚动将增量的EditLog更新到FsImage，以保证更近时点的FsImage和更小的EditLog体积
-    HDFS数据持久化：
- FsImage：镜像、快照  +   EditsLog：日志
+    NameNode使用  FsImage：镜像、快照  +   EditsLog：日志
+    	滚动将增量的EditLog更新到FsImage，以保证更近时点的FsImage和更小的EditLog体积
 	 滚动更新过程:最近时点的FsImage + 增量的EditsLog, NN ：第一次开机的时候，只写一次FI ，假设8点，到9点的时候，EL  记录的是8~9的日志
 			只需要将8~9的日志的记录，更新到8点的FI中，FI的数据时点就变成了9点
 			寻求另外一台机器来做
 
-![image-20200527182210419](E:\mdFiles\HDFS.assets\image-20200527182210419.png)
+![image-20200527182210419](.\HDFS.assets\image-20200527182210419.png)
 
 **安全模式**
     HDFS搭建时会格式化，格式化操作会产生一个空的FsImage，当Namenode启动时，它从硬盘中读取Editlog和FsImage，将所有Editlog中的事务作用在内存中的FsImage上，并将这个新版本的FsImage从内存中保存到本地磁盘上， 然后删除旧的Editlog
     Namenode启动后会进入一个称为安全模式的特殊状态。处于安全模式的Namenode是不会进行数据块的复制的。Namenode从所有的 Datanode接收心跳信号和块状态报告。每当Namenode检测确认某个数据块的副本数目达到这个最小值，那么该数据块就会被认为是副本安全(safely replicated)的。在一定百分比（参数可配置）的数据块被Namenode检测确认是安全之后（加上一个额外的30秒等待时间），Namenode将退出安全模式状态。接下来它会确定还有哪些数据块的副本没有达到指定数目，并将这些数据块复制到其他Datanode上
 
-HDFS中的SecondaryNameNode（SNN）
+**Secondary NameNode（SNN）**
 在非Ha模式下，SNN一般是独立的节点，周期完成对NN的EditLog向FsImage合并，减少EditLog大小，减少NN启动时间。根据配置文件设置的时间间隔fs.checkpoint.period  默认3600秒。根据配置文件设置edits log大小 fs.checkpoint.size 规定edits文件的最大值默认是64MB
 
 **副本放置策略**
@@ -48,202 +50,65 @@ HDFS中的SecondaryNameNode（SNN）
 第三个副本：与第二个副本相同机架的节点。
 更多副本：随机节点。
 
-读写流程
+**HDFS读写流程**
 Client和NN连接创建文件元数据，NN判定元数据是否有效，处发副本放置策略，返回一个有序的DN列表，Client和DN建立Pipeline连接，Client将块切分成packet（64KB），并使用chunk（512B）+chucksum（4B）填充，Client将packet放入发送队列dataqueue中，并向第一个DN发送。第一个DN收到packet后本地保存并发送给第二个DN，第二个DN收到packet后本地保存并发送给第三个DN；这一个过程中，上游节点同时发送下一个packet。生活中类比工厂的流水线：结论：流式其实也是变种的并行计算
+
+![image-20200528132242140](HDFS.assets/image-20200528132242140.png)
+
+![image-20200528132346042](HDFS.assets/image-20200528132346042.png)
 
 Hdfs使用这种传输方式，副本数对于client是透明的
 当block传输完成，DN们各自向NN汇报，同时client继续传输下一个block
 所以，client的传输和block的汇报也是并行的
 为了降低整体的带宽消耗和读取延时，HDFS会尽量让读取程序读取离它最近的副本。如果在读取程序的同一个机架上有一个副本，那么就读取该副本。
 如果一个HDFS集群跨越多个数据中心，那么客户端也将首先读本地数据中心的副本。
+
+
+
 语义：下载一个文件：
 Client和NN交互文件元数据获取fileBlockLocation
 NN会按距离策略排序返回
 Client尝试下载block并校验数据完整性
 语义：下载一个文件其实是获取文件的所有的block元数据，那么子集获取某些block应该成立
-Hdfs支持client给出文件的offset自定义连接哪些block的DN，自定义获取数据
-这个是支持计算层的分治、并行计算的核心
+Hdfs支持client给出文件的offset自定义连接哪些block的DN，自定义获取数据.这个是支持计算层的分治、并行计算的核心
 
-![image-20200527182255850](E:\mdFiles\HDFS.assets\image-20200527182255850.png)安全策略
+![image-20200527182255850](.\HDFS.assets\image-20200527182255850.png)
 
-hadoop  安装：
-centos 6.5/jdk 1.8 /hadoop 2.6.5  
 
-1. 基础设施：	
-设置网络,IP
-
-vm编辑->虚拟网络编辑器->观察 NAT模式的地址 
-
-￼
-  vi /etc/sysconfig/network-scripts/ifcfg-eth0
-    DEVICE=eth0
-    HWADDR=00:0C:29:42:15:C2
-    TYPE=Ethernet
-    ONBOOT=yes
-    NM_CONTROLLED=yes
-    BOOTPROTO=static
-    IPADDR=192.168.150.11
-    NETMASK=255.255.255.0
-    GATEWAY=192.168.150.2
-    DNS1=223.5.5.5
-    DNS2=114.114.114.114
-设置主机名
-
-￼
-vi /etc/sysconfig/network
-  NETWORKING=yes
-  HOSTNAME=node01
-设置本机的ip到主机名的映射关系
-
-￼
-vi /etc/hosts
-  192.168.150.11 node01
-  192.168.150.12 node02
-设置主机名
-
-￼
-vi /etc/sysconfig/network
-  NETWORKING=yes
-  HOSTNAME=node01
-设置本机的ip到主机名的映射关系
-
-￼
-vi /etc/hosts
-  192.168.150.11 node01
-  192.168.150.12 node02
-关闭防火墙
-
-￼
-service iptables stop
-chkconfig iptables off
-关闭 selinux
-
-￼
-vi /etc/selinux/config
-  SELINUX=disabled
-做时间同步
-
-￼
-yum install ntp  -y
-vi /etc/ntp.conf
-  server ntp1.aliyun.com
-  service ntpd start
-  chkconfig ntpd on
-安装JDK：
-￼
-rpm -i  jdk-8u181-linux-x64.rpm 
-vi /etc/profile     
-  export  JAVA_HOME=/usr/java/default
-  export PATH=$PATH:$JAVA_HOME/bin
-source /etc/profile   |  ./etc/profile
-ssh免密：  
-ssh  localhost  验证自己是否免密 ,被动生成了  /root/.ssh
-	如果A 想 免密的登陆到B：
-		A：生成公钥，把公钥给B
-			ssh-keygen -t dsa -P '' -f ~/.ssh/id_dsa
-		B：
-		cat ~/.ssh/id_dsa.pub >> ~/.ssh/authorized_keys
-
-2. Hadoop的配置（应用的搭建过程）
-￼
-规划路径：
-mkdir /opt/bigdata
-tar xf hadoop-2.6.5.tar.gz
-mv hadoop-2.6.5  /opt/bigdata/
-pwd   /opt/bigdata/hadoop-2.6.5
-￼
-vi /etc/profile 
-  export  JAVA_HOME=/usr/java/default
-  export HADOOP_HOME=/opt/bigdata/hadoop-2.6.5
-  export PATH=$PATH:$JAVA_HOME/bin:$HADOOP_HOME/bin:$HADOOP_HOME/sbin
-source /etc/profile
-
-配置hadoop的角色：
-cd   $HADOOP_HOME/etc/hadoop
-  必须给hadoop配置javahome要不ssh过去找不到
-vi hadoop-env.sh
-  export JAVA_HOME=/usr/java/default
-  给出NN角色在哪里启动
-vi core-site.xml
-      <property>
-      <name>fs.defaultFS</name>
-      <value>hdfs://node01:9000</value>
-    </property>
-  配置hdfs  副本数为1.。。。
-vi hdfs-site.xml
-      <property>
-      <name>dfs.replication</name>
-      <value>1</value>
-    </property>
-    <property>
-      <name>dfs.namenode.name.dir</name>
-      <value>/var/bigdata/hadoop/local/dfs/name</value>
-    </property>
-    <property>
-      <name>dfs.datanode.data.dir</name>
-      <value>/var/bigdata/hadoop/local/dfs/data</value>
-    </property>
-    <property>
-      <name>dfs.namenode.secondary.http-address</name>
-      <value>node01:50090</value>
-    </property>
-    <property>
-      <name>dfs.namenode.checkpoint.dir</name>
-      <value>/var/bigdata/hadoop/local/dfs/secondary</value>
-    </property>
-
-配置DN这个角色再那里启动
-vi slaves
-	node01
-
-3,初始化&启动：
-	hdfs namenode -format  
-		创建目录
-		并初始化一个空的fsimage
-		VERSION
-			CID
-	
-
-￼
-start-dfs.sh
-  第一次：datanode和secondary角色会初始化创建自己的数据目录
-
-http://node01:50070
-  修改windows： C:\Windows\System32\drivers\etc\hosts
-    192.168.150.11 node01
-    192.168.150.12 node02
-    192.168.150.13 node03
-    192.168.150.14 node04
-4，简单使用：
-	hdfs dfs -mkdir /bigdata
-	hdfs dfs -mkdir  -p  /user/root
-
-5,验证知识点：
-	cd   /var/bigdata/hadoop/local/dfs/name/current
-		观察 editlog的id是不是再fsimage的后边
-	cd /var/bigdata/hadoop/local/dfs/secondary/current
-		SNN 只需要从NN拷贝最后时点的FSimage和增量的Editlog
-
-￼
-hdfs dfs -put hadoop*.tar.gz  /user/root
-cd  /var/bigdata/hadoop/local/dfs/data/current/BP-281147636-192.168.150.11-1560691854170/current/finalized/subdir0/subdir0
-￼
-for i in `seq 100000`;do  echo "hello hadoop $i"  >>  data.txt  ;done
-h2支持追加数据
-
-架构设计		
-角色功能
-元数据持久化
-安全模式
-副本放置策略
-读写流程
-安全策略
 
 ------
+
+
 
 ## hadoop  安装：
 
 centos 6.5/jdk 1.8 /hadoop 2.6.5  
+
+- 基础设施
+      操作系统、环境、网络、必须软件
+          设置IP及主机名
+          关闭防火墙&selinux
+          设置hosts映射
+          时间同步
+          安装jdk
+          设置SSH免秘钥
+
+
+- 部署配置
+       伪分布式：  在一个节点启动所有的角色： NN,DN,SNN
+| **host** | **NN** | **SNN** | **DN** |
+| -------- | ------ | ------- | ------ |
+| node01   | *      | *       | *      |
+
+
+
+​          配置文件: hadoop-env.sh,core-site.xml,hdfs-site.xml,slaves
+
+- 初始化运行
+      1.格式化
+      2.启动角色进程
+
+- 命令行使用
 
 #### 1. 基础设施：	
 
@@ -276,7 +141,7 @@ vi /etc/sysconfig/network
 
 设置本机的ip到主机名的映射关系
 
-```
+```bash
 vi /etc/hosts
 	192.168.150.11 node01
 	192.168.150.12 node02
@@ -284,7 +149,7 @@ vi /etc/hosts
 
 设置主机名
 
-```
+```bash
 vi /etc/sysconfig/network
 	NETWORKING=yes
 	HOSTNAME=node01
@@ -292,29 +157,27 @@ vi /etc/sysconfig/network
 
 设置本机的ip到主机名的映射关系
 
-```
+```bash
 vi /etc/hosts
 	192.168.150.11 node01
 	192.168.150.12 node02
 ```
 
 关闭防火墙
-
-```
+```bash
 service iptables stop
 chkconfig iptables off
 ```
 
 关闭 selinux
-
-```
+```bash
 vi /etc/selinux/config
 	SELINUX=disabled
 ```
 
 做时间同步
 
-```
+```bash
 yum install ntp  -y
 vi /etc/ntp.conf
 	server ntp1.aliyun.com
@@ -343,89 +206,97 @@ ssh  localhost  验证自己是否免密 ,被动生成了  /root/.ssh
 
 #### 2. Hadoop的配置（应用的搭建过程）
 
-	规划路径：
-	mkdir /opt/bigdata
-	tar xf hadoop-2.6.5.tar.gz
-	mv hadoop-2.6.5  /opt/bigdata/
-	pwd 	/opt/bigdata/hadoop-2.6.5
 
+```bash
+mkdir /opt/bigdata
+tar xf hadoop-2.6.5.tar.gz
+mv hadoop-2.6.5  /opt/bigdata/
+pwd 	/opt/bigdata/hadoop-2.6.5
 
-	vi /etc/profile	
-		export  JAVA_HOME=/usr/java/default
-		export HADOOP_HOME=/opt/bigdata/hadoop-2.6.5
-		export PATH=$PATH:$JAVA_HOME/bin:$HADOOP_HOME/bin:$HADOOP_HOME/sbin
-	source /etc/profile
-	
-	配置hadoop的角色：
-	cd   $HADOOP_HOME/etc/hadoop
-		必须给hadoop配置javahome要不ssh过去找不到
-	vi hadoop-env.sh
-		export JAVA_HOME=/usr/java/default
-		给出NN角色在哪里启动
-	vi core-site.xml
-		    <property>
-				<name>fs.defaultFS</name>
-				<value>hdfs://node01:9000</value>
-			</property>
-		配置hdfs  副本数为1.。。。
-	vi hdfs-site.xml
-		    <property>
-				<name>dfs.replication</name>
-				<value>1</value>
-			</property>
-			<property>
-				<name>dfs.namenode.name.dir</name>
-				<value>/var/bigdata/hadoop/local/dfs/name</value>
-			</property>
-			<property>
-				<name>dfs.datanode.data.dir</name>
-				<value>/var/bigdata/hadoop/local/dfs/data</value>
-			</property>
-			<property>
-				<name>dfs.namenode.secondary.http-address</name>
-				<value>node01:50090</value>
-			</property>
-			<property>
-				<name>dfs.namenode.checkpoint.dir</name>
-				<value>/var/bigdata/hadoop/local/dfs/secondary</value>
-			</property>
-	
-	配置DN这个角色再那里启动
-vi slaves
-	node01
+vi /etc/profile	
+    export JAVA_HOME=/usr/java/default
+    export HADOOP_HOME=/opt/bigdata/hadoop-2.6.5
+    export PATH=$PATH:$JAVA_HOME/bin:$HADOOP_HOME/bin:$HADOOP_HOME/sbin
+source /etc/profile
 
-3,初始化&启动：
-	hdfs namenode -format  
-		创建目录
-		并初始化一个空的fsimage
-		VERSION
-			CID
-	
-	start-dfs.sh
-		第一次：datanode和secondary角色会初始化创建自己的数据目录
+################ 配置hadoop的角色 ####################
+cd  $HADOOP_HOME/etc/hadoop
+
+##必须给hadoop配置javahome要不ssh过去找不到
+vi hadoop-env.sh 
+			export JAVA_HOME=/usr/java/default
+			
+##给出NN角色在哪里启动			
+vi core-site.xml  
+	    <property>
+			<name>fs.defaultFS</name>
+			<value>hdfs://node01:9000</value>
+		</property>
 		
-	http://node01:50070
-		修改windows： C:\Windows\System32\drivers\etc\hosts
-			192.168.150.11 node01
-			192.168.150.12 node02
-			192.168.150.13 node03
-			192.168.150.14 node04
+###配置hdfs  副本数为1. 
+vi hdfs-site.xml
+        <property>
+          <name>dfs.replication</name>
+          <value>1</value>
+        </property>
+        <property>
+          <name>dfs.namenode.name.dir</name>
+          <value>/var/bigdata/hadoop/local/dfs/name</value>
+        </property>
+        <property>
+          <name>dfs.datanode.data.dir</name>
+          <value>/var/bigdata/hadoop/local/dfs/data</value>
+        </property>
+        <property>
+          <name>dfs.namenode.secondary.http-address</name>
+          <value>node01:50090</value>
+        </property>
+        <property>
+          <name>dfs.namenode.checkpoint.dir</name>
+          <value>/var/bigdata/hadoop/local/dfs/secondary</value>
+        </property>
 
-4，简单使用：
-	hdfs dfs -mkdir /bigdata
-	hdfs dfs -mkdir  -p  /user/root
+###配置DN这个角色再那里启动
+vi slaves
+	 node01
+```
 
 
+#### 3. 初始化&启动：
 
-5,验证知识点：
-	cd   /var/bigdata/hadoop/local/dfs/name/current
-		观察 editlog的id是不是再fsimage的后边
-	cd /var/bigdata/hadoop/local/dfs/secondary/current
-		SNN 只需要从NN拷贝最后时点的FSimage和增量的Editlog
+  ​	hdfs namenode -format  
+  ​      创建目录,并初始化一个空的fsimage
+  ​      VERSION  CID
+  ​	
+
+  ​	start-dfs.sh
+  ​		第一次：datanode和secondary角色会初始化创建自己的数据目录
+  ​	
+
+  访问 http://node01:50070
+  ​	修改windows： C:\Windows\System32\drivers\etc\hosts
+  ​		192.168.150.11 node01
+  ​		192.168.150.12 node02
+  ​		192.168.150.13 node03
+  ​		192.168.150.14 node04
+
+#### 4.  简单使用：
+
+```bash
+hdfs dfs -mkdir /bigdata
+hdfs dfs -mkdir  -p  /user/root	 
+
+#####验证：
+cd   /var/bigdata/hadoop/local/dfs/name/current
+##    观察 editlog的id是不是再fsimage的后边
+cd /var/bigdata/hadoop/local/dfs/secondary/current
+##    SNN 只需要从NN拷贝最后时点的FSimage和增量的Editlog
+
+hdfs dfs -put hadoop*.tar.gz  /user/root
+cd  /var/bigdata/hadoop/local/dfs/data/current/BP-281147636-192.168.150.11-1560691854170/current/finalized/subdir0/subdir0
+```
 
 
-	hdfs dfs -put hadoop*.tar.gz  /user/root
-	cd  /var/bigdata/hadoop/local/dfs/data/current/BP-281147636-192.168.150.11-1560691854170/current/finalized/subdir0/subdir0
 
 
 	for i in `seq 100000`;do  echo "hello hadoop $i"  >>  data.txt  ;done
@@ -435,32 +306,71 @@ vi slaves
 
 -----------------------------------------------------------------------------------------
 
-伪分布式：  在一个节点启动所有的角色： NN,DN,SNN
-完全分布式：
-	基础环境
-	部署配置
-		1）角色在哪里启动
-			NN： core-site.xml:  fs.defaultFS  hdfs://node01:9000
-			DN:  slaves:  node01
-			SNN: hdfs-siet.xml:  dfs.namenode.secondary.http.address node01:50090
-		2) 角色启动时的细节配置：
-			dfs.namenode.name.dir  
-			dfs.datanode.data.dir
-	初始化&启动
-		格式化
-			Fsimage
-			VERSION
-		start-dfs.sh
-			加载我们的配置文件
-			通过ssh 免密的方式去启动相应的角色
+### HDFS-HA
 
-伪分布式到完全分布式：角色重新规划
+HDFS解决方案：
+单点故障：
+	高可用方案：HA（High Available） 	多个NN，主备切换，主
+压力过大，内存受限：
+	联帮机制： Federation（元数据分片）	多个NN，管理不同的元数据
+
+![image-20200528160610673](HDFS.assets/image-20200528160610673.png)
+
+多台NN主备模式，Active和Standby状态
+	Active对外提供服务
+增加journalnode角色(>3台)，负责同步NN的editlog
+	最终一致性
+增加zkfc角色(与NN同台)，通过zookeeper集群协调NN的主从选举和切换
+	事件回调机制
+DN同时向NNs汇报block清单
+
+
+
+###### HDFS- Federation:
+
+NN的压力过大，内存受限问题:
+元数据分治，复用DN存储
+元数据访问隔离性
+DN目录隔离block
+
+![image-20200528161237579](HDFS.assets/image-20200528161237579.png)
+
+
+
+##### 完全分布式：
+
+​	基础环境
+​	部署配置
+​		1）角色在哪里启动
+​			NN： core-site.xml:  fs.defaultFS  hdfs://node01:9000
+​			DN:  slaves:  node01
+​			SNN: hdfs-siet.xml:  dfs.namenode.secondary.http.address node01:50090
+​		2) 角色启动时的细节配置：
+​			dfs.namenode.name.dir  
+​			dfs.datanode.data.dir
+​	初始化&启动
+​		格式化
+​			Fsimage
+​			VERSION
+​		start-dfs.sh
+​			加载我们的配置文件
+​			通过ssh 免密的方式去启动相应的角色
+
+伪分布式到完全分布式 (四节点)：角色重新规划
+
+| **host** | **NN** | **SNN** | **DN** |
+| :------- | ------ | ------- | ------ |
+| node01   | *      |         |        |
+| node02   |        | *       | *      |
+| node03   |        |         | *      |
+| node04   |        |         | *      |
+
+
 
 	node01:
 		stop-dfs.sh
-	
 	ssh 免密是为了什么 ：  启动start-dfs.sh：  在哪里启动，那台就要对别人公开自己的公钥
-		这一台有什么特殊要求吗： 没有
+		
 	node02~node04:
 		rpm -i jdk....
 	node01:
@@ -478,35 +388,35 @@ vi slaves
 		cat node01.pub >> authorized_keys
 
 配置部署：
-	node01:
-		cd $HADOOP/etc/hadoop
-		vi core-site.xml    不需要改
-		vi hdfs-site.xml
-			    <property>
-				<name>dfs.replication</name>
-				<value>2</value>
-			    </property>
-			    <property>
-				<name>dfs.namenode.name.dir</name>
-				<value>/var/bigdata/hadoop/full/dfs/name</value>
-			    </property>
-			    <property>
-				<name>dfs.datanode.data.dir</name>
-				<value>/var/bigdata/hadoop/full/dfs/data</value>
-			    </property>
-			    <property>
-				<name>dfs.namenode.secondary.http-address</name>
-				<value>node02:50090</value>
-			    </property>
-			    <property>
-				<name>dfs.namenode.checkpoint.dir</name>
-				<value>/var/bigdata/hadoop/full/dfs/secondary</value>
-			    </property>
-		vi slaves
-			node02
-			node03
-			node04
 
+	 node01:
+			cd $HADOOP/etc/hadoop
+			vi core-site.xml    不需要改
+			vi hdfs-site.xml
+				    <property>
+					<name>dfs.replication</name>
+					<value>2</value>
+				    </property>
+				    <property>
+					<name>dfs.namenode.name.dir</name>
+					<value>/var/bigdata/hadoop/full/dfs/name</value>
+				    </property>
+				    <property>
+					<name>dfs.datanode.data.dir</name>
+					<value>/var/bigdata/hadoop/full/dfs/data</value>
+				    </property>
+				    <property>
+					<name>dfs.namenode.secondary.http-address</name>
+					<value>node02:50090</value>
+				    </property>
+				    <property>
+					<name>dfs.namenode.checkpoint.dir</name>
+					<value>/var/bigdata/hadoop/full/dfs/secondary</value>
+				    </property>
+			vi slaves
+				node02
+				node03
+				node04
 		分发：
 			cd /opt
 			scp -r ./bigdata/  node02:`pwd`
@@ -526,14 +436,15 @@ HA模式下：有一个问题，你的NN是2台？在某一时刻，谁是Active
 core-site.xml
 fs.defaultFs -> hdfs://node01:9000
 
-配置：
-	core-site.xml
-		<property>
-		  <name>fs.defaultFS</name>
-		  <value>hdfs://mycluster</value>
-		</property>
 
-		 <property>
+
+	配置：
+		core-site.xml
+			<property>
+			  <name>fs.defaultFS</name>
+			  <value>hdfs://mycluster</value>
+			</property>
+	<property>
 		   <name>ha.zookeeper.quorum</name>
 		   <value>node02:2181,node03:2181,node04:2181</value>
 		 </property>
@@ -597,16 +508,16 @@ fs.defaultFs -> hdfs://node01:9000
 
 
 
-流程：
-	基础设施
+
+	1. 基础设施
 		ssh免密：
 			1）启动start-dfs.sh脚本的机器需要将公钥分发给别的节点
 			2）在HA模式下，每一个NN身边会启动ZKFC，
 				ZKFC会用免密的方式控制自己和其他NN节点的NN状态
-	应用搭建
+	2应用搭建
 		HA 依赖 ZK  搭建ZK集群
 		修改hadoop的配置文件，并集群同步
-	初始化启动
+	3初始化启动
 		1）先启动JN   hadoop-daemon.sh start journalnode 
 		2）选择一个NN 做格式化：hdfs namenode -format   <只有第一次搭建做，以后不用做>
 		3)启动这个格式化的NN ，以备另外一台同步  hadoop-daemon.sh start namenode 
@@ -616,6 +527,8 @@ fs.defaultFs -> hdfs://node01:9000
 	使用
 
 ------实操：
+
+```bash
 	1）停止之前的集群
 	2）免密：node01,node02
 		node02: 
@@ -639,11 +552,11 @@ fs.defaultFs -> hdfs://node01:9000
 				server.2=node03:2888:3888
 				server.3=node04:2888:3888
 			mkdir /var/bigdata/hadoop/zk
-			echo 1 >  /var/bigdata/hadoop/zk/myid 
-			vi /etc/profile
-				export ZOOKEEPER_HOME=/opt/bigdata/zookeeper-3.4.6
-				export PATH=$PATH:$JAVA_HOME/bin:$HADOOP_HOME/bin:$HADOOP_HOME/sbin:$ZOOKEEPER_HOME/bin
-			. /etc/profile
+echo 1 >  /var/bigdata/hadoop/zk/myid 
+vi /etc/profile
+export ZOOKEEPER_HOME=/opt/bigdata/zookeeper-3.4.6
+export PATH=$PATH:$JAVA_HOME/bin:$HADOOP_HOME/bin:$HADOOP_HOME/sbin:$ZOOKEEPER_HOME/bin
+	. /etc/profile
 			cd /opt/bigdata
 			scp -r ./zookeeper-3.4.6  node03:`pwd`
 			scp -r ./zookeeper-3.4.6  node04:`pwd`
@@ -657,20 +570,20 @@ fs.defaultFs -> hdfs://node01:9000
 			echo 3 >  /var/bigdata/hadoop/zk/myid
 			*环境变量
 			. /etc/profile
+node02~node04:
+		zkServer.sh start
 
-		node02~node04:
-			zkServer.sh start
-	
-	4）配置hadoop的core和hdfs
-	5）分发配置
-		给每一台都分发
-	6）初始化：
-		1）先启动JN   hadoop-daemon.sh start journalnode 
-		2）选择一个NN 做格式化：hdfs namenode -format   <只有第一次搭建做，以后不用做>
-		3)启动这个格式化的NN ，以备另外一台同步  hadoop-daemon.sh start namenode 
-		4)在另外一台机器中： hdfs namenode -bootstrapStandby
-		5)格式化zk：   hdfs zkfc  -formatZK     <只有第一次搭建做，以后不用做>
-		6) start-dfs.sh	
+4）配置hadoop的core和hdfs
+5）分发配置
+	给每一台都分发
+6）初始化：
+	1）先启动JN   hadoop-daemon.sh start journalnode 
+	2）选择一个NN 做格式化：hdfs namenode -format   <只有第一次搭建做，以后不用做>
+	3)启动这个格式化的NN ，以备另外一台同步  hadoop-daemon.sh start namenode 
+	4)在另外一台机器中： hdfs namenode -bootstrapStandby
+	5)格式化zk：   hdfs zkfc  -formatZK     <只有第一次搭建做，以后不用做>
+	6) start-dfs.sh	
+```
 使用验证：
 	1）去看jn的日志和目录变化：
 	2）node04
@@ -691,36 +604,21 @@ fs.defaultFs -> hdfs://node01:9000
 ==================================================================================
 
 1，hdfs 的权限
-2，hdfs java api idea
-3，mapreduce 启蒙
 
-Permission	Owner	Group		Size	Replication	Block Size	Name
-drwxr-xr-x	root	supergroup	0 B	0		0 B		user
--rw-r--r--	root	supergroup	8.61 KB	2		128 MB		install.log
+hdfs是一个文件系统,有用户概念;默认情况使用操作系统提供的用户,自己不创建用户
+	linux系统中超级用户：root
+	hdfs系统中超级用户： 是namenode进程的启动用户
+有权限概念
+	hdfs的权限是自己控制的 来自于hdfs的超级用户	
 
-hdfs是一个文件系统
-	类unix、linux
-	有用户概念
-	
-	hdfs没有相关命令和接口去创建用户
-		信任客户端 <- 默认情况使用的 操作系统提供的用户
-				扩展 kerberos LDAP  继承第三方用户认证系统
-	有超级用户的概念
-		linux系统中超级用户：root
-		hdfs系统中超级用户： 是namenode进程的启动用户
-	
-	有权限概念
-		hdfs的权限是自己控制的 来自于hdfs的超级用户
 
------------实操：（一般在企业中不会用root做什么事情）
-	面向操作系统		root是管理员  其他用户都叫【普通用户】
-	面向操作系统的软件	谁启动，管理这个进程，那么这个用户叫做这个软件的管理员
 
-	实操：
+
+
+
 	切换我们用root搭建的HDFS  用god这个用户来启动
-	
 	node01~node04:
-		*)stop-dfs.sh
+		 stop-dfs.sh
 		1)添加用户：root
 			useradd god
 			passwd god
@@ -808,13 +706,7 @@ windows idea eclips  叫什么：  集成开发环境  ide 你不需要做太多
 
 ==================================================================================
 
-hdfs：
-	存储模型
-		切块，散列 ->分治  目的：分布式计算
-	实现：->  框架
-		角色 NN，DN
-	特长/特点  ->  架构师：【技术选型】
-		读写流程就很重要
+3，mapreduce 启蒙
 
 mapreduce：批量计算     流式计算 
 	计算模型
@@ -926,17 +818,8 @@ mapreduce：批量计算     流式计算
 				相对的：MR的cli，【调度】，任务，这些都是临时服务了。。。。
 
 
-rwx
-001  1
-010  2
-100  4
 
-rwx
-111
-rw-
-110
-rw- --- ---
-110 000 000   600
+
 
 ===================================================================
 
@@ -1065,31 +948,27 @@ MR  提交方式
 					还要将hadoop.dll  复制到  c:\windwos\system32\
 				3，设置环境变量：HADOOP_HOME  C:\usr\hadoop-2.6.5\hadoop-2.6.5 
 	
-		IDE -> 集成开发： 
-			hadoop最好的平台是linux
-			部署hadoop，bin
+
+
 
 参数个性化：
 	GenericOptionsParser parser = new GenericOptionsParser(conf, args);  //工具类帮我们把-D 等等的属性直接set到conf，会留下commandOptions
         String[] othargs = parser.getRemainingArgs();
 
 -----------------------------------------------------------------
-源码的分析：（目的）  更好的理解你学的技术的细节 以及原理
+##### 源码的分析：
+
+  更好的理解你学的技术的细节 以及原理
 	资源层yarn
-	what？why？how？
-	3个环节 <-  分布式计算  <- 追求：
-					计算向数据移动	
-					并行度、分治
-					数据本地化读取
-	Client
-		没有计算发生
-		很重要：支撑了计算向数据移动和计算的并行度
-		1，Checking the input and output specifications of the job.
-		2，Computing the InputSplits for the job.  // split  ->并行度和计算向数据移动就可以实现了
-		3，Setup the requisite accounting information for the DistributedCache of the job, if necessary.
-		4，Copying the job's jar and configuration to the map-reduce system directory on the distributed file-system.
-		5，Submitting the job to the JobTracker and optionally monitoring it's status
-		
+
+​	Client
+​		1，Checking the input and output specifications of the job.
+​		2，Computing the InputSplits for the job.  // split  ->并行度和计算向数据移动就可以实现了
+​		3，Setup the requisite accounting information for the DistributedCache of the job, if necessary.
+​		4，Copying the job's jar and configuration to the map-reduce system directory on the distributed file-system.
+​		5，Submitting the job to the JobTracker and optionally monitoring it's status
+​		
+
 		MR框架默认的输入格式化类： TextInputFormat < FileInputFormat < InputFormat
 								getSplits()			    
 			
@@ -1183,111 +1062,3 @@ MR  提交方式
 
 
 
-
-ReduceTask
-	input ->  reduce  -> output
-	map:run:	while (context.nextKeyValue())
-				一条记录调用一次map
-	reduce:run:	while (context.nextKey())
-				一组数据调用一次reduce
-
-	doc：
-		1，shuffle：  洗牌（相同的key被拉取到一个分区），拉取数据
-		2，sort：  整个MR框架中只有map端是无序到有序的过程，用的是快速排序
-				reduce这里的所谓的sort其实
-				你可以想成就是一个对着map排好序的一堆小文件做归并排序
-			grouping comparator
-			1970-1-22 33	bj
-			1970-1-8  23	sh
-				排序比较啥：年，月，温度，，且温度倒序
-				分组比较器：年，月
-		3，reduce：
-	
-	run：
-		rIter = shuffle。。//reduce拉取回属于自己的数据，并包装成迭代器~！真@迭代器
-			file(磁盘上)-> open -> readline -> hasNext() next()
-			时时刻刻想：我们做的是大数据计算，数据可能撑爆内存~！
-		comparator = job.getOutputValueGroupingComparator();
-				1，取用户设置的分组比较器
-				2，取getOutputKeyComparator();
-					1，优先取用户覆盖的自定义排序比较器
-					2，保底，取key这个类型自身的比较器
-				#：分组比较器可不可以复用排序比较器
-					什么叫做排序比较器：返回值：-1,0,1
-					什么叫做分组比较器：返回值：布尔值，false/true
-					排序比较器可不可以做分组比较器：可以的
-	
-				mapTask				reduceTask
-								1，取用户自定义的分组比较器
-				1，用户定义的排序比较器		2，用户定义的排序比较器
-				2，取key自身的排序比较器	3，取key自身的排序比较器
-				组合方式：
-					1）不设置排序和分组比较器：
-						map：取key自身的排序比较器
-						reduce：取key自身的排序比较器
-					2）设置了排序
-						map：用户定义的排序比较器
-						reduce：用户定义的排序比较器
-					3）设置了分组
-						map：取key自身的排序比较器
-						reduce：取用户自定义的分组比较器
-					4）设置了排序和分组
-						map：用户定义的排序比较器
-						reduce：取用户自定义的分组比较器
-				做减法：结论，框架很灵活，给了我们各种加工数据排序和分组的方式
-		
-		ReduceContextImpl
-			input = rIter  真@迭代器
-			hasMore = true
-			nextKeyIsSame = false
-			iterable = ValueIterable
-			iterator = ValueIterator
-	
-			ValueIterable
-				iterator()
-					return iterator;
-			ValueIterator	假@迭代器  嵌套迭代器
-				hasNext()
-					return firstValue || nextKeyIsSame;
-				next()
-					nextKeyValue();
-	
-			nextKey()
-				nextKeyValue()
-	
-			nextKeyValue()
-				1，通过input取数据，对key和value赋值
-				2，返回布尔值
-				3，多取一条记录判断更新nextKeyIsSame
-					窥探下一条记录是不是还是一组的！
-			
-			getCurrentKey()
-				return key
-	
-			getValues()
-				return iterable;
-	
-		**：
-			reduceTask拉取回的数据被包装成一个迭代器
-			reduce方法被调用的时候，并没有把一组数据真的加载到内存
-				而是传递一个迭代器-values
-				在reduce方法中使用这个迭代器的时候：
-					hasNext方法判断nextKeyIsSame：下一条是不是还是一组
-					next方法：负责调取nextKeyValue方法，从reduceTask级别的迭代器中取记录，
-						并同时更新nextKeyIsSame
-			以上的设计艺术：
-				充分利用了迭代器模式：
-					规避了内存数据OOM的问题
-					且：之前不是说了框架是排序的
-						所以真假迭代器他们只需要协作，一次I/O就可以线性处理完每一组数据~！
-rwx
-001  1
-010  2
-100  4
-
-rwx
-111
-rw-
-110
-rw- --- ---
-110 000 000   600
